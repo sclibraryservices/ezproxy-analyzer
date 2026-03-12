@@ -1,3 +1,3 @@
 # ezproxy-analyzer
 
-A Python script co-authored with Claude Sonnet 4.6 to analyze EZproxy logfiles.
+A Python script co-authored with Claude Sonnet 4.6 to analyze EZproxy logfiles. Still a work in progress.

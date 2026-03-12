@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """
 EZproxy Log File Bulk Analyzer
-Parses and analyzes EZproxy access logs to produce summary statistics,
-top users, top resources, traffic trends, and error reports.
+Parses and analyzes EZproxy access logs to produce comprehensive summary statistics,
+top users, top resources, traffic trends, and error reports. Supports multiple input
+log formats and exports results to text, CSV, JSON, or Excel formats.
 
-Supported log formats:
+Input log formats supported:
   - EZproxy default: "%h %l %u %t \"%r\" %s %b"
   - EZproxy extended (with referrer and user-agent)
   - SPU (Starting Point URL) log format
+
+Output formats:
+  - text: Formatted text report (default, to stdout or file)
+  - csv:  Comma-separated values with sections for each data category
+  - json: Structured JSON with all metrics and trending data
+  - xlsx: Multi-sheet Excel workbook with formatted tables
 
 Usage:
   python ezproxy_analyzer.py [options] <logfile_or_directory> [logfile2 ...]
@@ -16,7 +23,10 @@ Examples:
   python ezproxy_analyzer.py /var/log/ezproxy/
   python ezproxy_analyzer.py ezproxy.log.2024-01 ezproxy.log.2024-02
   python ezproxy_analyzer.py --output report.csv --format csv /logs/
-  python ezproxy_analyzer.py --top 20 --since 2024-01-01 /logs/
+  python ezproxy_analyzer.py --output report.xlsx --format xlsx --top 20 /logs/
+  python ezproxy_analyzer.py --output report.json --format json /logs/
+  python ezproxy_analyzer.py --top 20 --since 2024-01-01 --until 2024-12-31 /logs/
+  python ezproxy_analyzer.py --exclude-users exclude_list.txt --format xlsx /logs/
 """
 
 import re
@@ -30,6 +40,13 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict, Counter
 from typing import Iterator
+
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    HAS_OPENPYXL = True
+except ImportError:
+    HAS_OPENPYXL = False
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +463,119 @@ class EZproxyAnalyzer:
             json.dump(data, fh, indent=2)
         print(f"JSON report written to: {output_path}", file=sys.stderr)
 
+    # -----------------------------------------------------------------------
+    # Excel export
+    # -----------------------------------------------------------------------
+
+    def write_excel(self, output_path: str, top_n: int | None = None) -> None:
+        if not HAS_OPENPYXL:
+            print("[ERROR] openpyxl is not installed. Install it with: pip install openpyxl", 
+                  file=sys.stderr)
+            return
+
+        wb = Workbook()
+        wb.remove(wb.active)  # Remove default sheet
+
+        # Styling
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF")
+        center_align = Alignment(horizontal="center", vertical="center")
+        
+        # Summary sheet
+        self._excel_summary(wb, header_fill, header_font)
+        
+        # Users sheet
+        self._excel_users(wb, top_n, header_fill, header_font)
+        
+        # Resources sheet
+        self._excel_resources(wb, top_n, header_fill, header_font)
+        
+        # Status codes sheet
+        self._excel_status_codes(wb, header_fill, header_font)
+        
+        # Monthly traffic sheet
+        self._excel_monthly(wb, header_fill, header_font)
+        
+        # Daily traffic sheet
+        self._excel_daily(wb, header_fill, header_font)
+        
+        # IPs sheet
+        self._excel_ips(wb, top_n, header_fill, header_font)
+        
+        wb.save(output_path)
+        print(f"Excel report written to: {output_path}", file=sys.stderr)
+
+    def _excel_summary(self, wb, header_fill, header_font):
+        ws = wb.create_sheet("Summary", 0)
+        s = self.summary()
+        ws.append(["Metric", "Value"])
+        self._excel_format_headers(ws, header_fill, header_font)
+        for k, v in s.items():
+            ws.append([k, v])
+        ws.column_dimensions['A'].width = 30
+        ws.column_dimensions['B'].width = 50
+
+    def _excel_users(self, wb, top_n, header_fill, header_font):
+        ws = wb.create_sheet("Users")
+        ws.append(["User", "Requests"])
+        self._excel_format_headers(ws, header_fill, header_font)
+        for user, count in self.user_counter.most_common(top_n):
+            ws.append([user, count])
+        ws.column_dimensions['A'].width = 30
+        ws.column_dimensions['B'].width = 15
+
+    def _excel_resources(self, wb, top_n, header_fill, header_font):
+        ws = wb.create_sheet("Resources")
+        ws.append(["Resource", "Requests", "Bytes"])
+        self._excel_format_headers(ws, header_fill, header_font)
+        for res, count in self.resource_counter.most_common(top_n):
+            bytes_val = self.bytes_by_resource.get(res, 0)
+            ws.append([res, count, bytes_val])
+        ws.column_dimensions['A'].width = 40
+        ws.column_dimensions['B'].width = 15
+        ws.column_dimensions['C'].width = 15
+
+    def _excel_status_codes(self, wb, header_fill, header_font):
+        ws = wb.create_sheet("Status Codes")
+        ws.append(["Status", "Count"])
+        self._excel_format_headers(ws, header_fill, header_font)
+        for status, count in sorted(self.status_counter.items()):
+            ws.append([status, count])
+        ws.column_dimensions['A'].width = 15
+        ws.column_dimensions['B'].width = 15
+
+    def _excel_monthly(self, wb, header_fill, header_font):
+        ws = wb.create_sheet("Monthly Traffic")
+        ws.append(["Month", "Requests"])
+        self._excel_format_headers(ws, header_fill, header_font)
+        for month, count in sorted(self.monthly_counter.items()):
+            ws.append([month, count])
+        ws.column_dimensions['A'].width = 15
+        ws.column_dimensions['B'].width = 15
+
+    def _excel_daily(self, wb, header_fill, header_font):
+        ws = wb.create_sheet("Daily Traffic")
+        ws.append(["Date", "Requests"])
+        self._excel_format_headers(ws, header_fill, header_font)
+        for day, count in sorted(self.daily_counter.items()):
+            ws.append([day, count])
+        ws.column_dimensions['A'].width = 15
+        ws.column_dimensions['B'].width = 15
+
+    def _excel_ips(self, wb, top_n, header_fill, header_font):
+        ws = wb.create_sheet("Client IPs")
+        ws.append(["IP Address", "Requests"])
+        self._excel_format_headers(ws, header_fill, header_font)
+        for ip, count in self.ip_counter.most_common(top_n):
+            ws.append([ip, count])
+        ws.column_dimensions['A'].width = 20
+        ws.column_dimensions['B'].width = 15
+
+    def _excel_format_headers(self, ws, fill, font):
+        for cell in ws[1]:
+            cell.fill = fill
+            cell.font = font
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -471,7 +601,7 @@ def parse_args():
                         help='Path to a text file with one IP/hostname per line to exclude')
     parser.add_argument('--output', '-o', metavar='FILE',
                         help='Write report to file (.csv or .json); stdout if omitted')
-    parser.add_argument('--format', choices=['text', 'csv', 'json'], default='text',
+    parser.add_argument('--format', choices=['text', 'csv', 'json', 'xlsx'], default='text',
                         help='Output format (default: text)')
     return parser.parse_args()
 
@@ -517,6 +647,10 @@ def main():
         if not out:
             out = 'ezproxy_report.json'
         analyzer.write_json(out, top_n=args.top)
+    elif fmt == 'xlsx':
+        if not out:
+            out = 'ezproxy_report.xlsx'
+        analyzer.write_excel(out, top_n=args.top)
     else:
         if out:
             sys.stdout = open(out, 'w', encoding='utf-8')
